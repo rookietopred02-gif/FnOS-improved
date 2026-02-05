@@ -28,6 +28,12 @@
                 <button onclick="showScanConfig()" class="btn btn-warning">
                     <i class="bi bi-search"></i> 开始检查可用性
                 </button>
+                <button type="button" class="btn btn-outline-danger" onclick="openVulnerableOrganizer()" title="汇总所有红色(漏洞)目标，便于分类维护">
+                    <i class="bi bi-shield-exclamation"></i> 一键整理敏感信息
+                </button>
+                <button type="button" class="btn btn-outline-warning" onclick="openNsfwMarkedOrganizer()" title="列出已标记 NSFW 的文件（不展示图片/视频）">
+                    <i class="bi bi-exclamation-triangle"></i> NSFW 标记清单
+                </button>
                 <div class="ms-3">
                     <small class="text-muted">
                         <i class="bi bi-info-circle"></i> 当前线程数: <span id="currentThreads">32</span>
@@ -98,6 +104,7 @@
                     <div class="form-check mt-2">
                         <input class="form-check-input" type="checkbox" id="dedup_ip" name="dedup_ip" value="1"
                                {% if dedup_ip %}checked{% endif %} onchange="this.form.submit()">
+                        <input type="hidden" name="dedup_ip" value="0">
                         <label class="form-check-label" for="dedup_ip">同 IP 只显示一次</label>
                     </div>
                 </div>
@@ -290,16 +297,174 @@
     </div>
 </div>
 
+<!-- 一键整理（红色/漏洞目标） -->
+<div class="modal fade" id="vulnOrganizerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title"><i class="bi bi-shield-exclamation"></i> 红色目标整理</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                    <button type="button" class="btn btn-danger" onclick="loadVulnerableTargets()">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新列表
+                    </button>
+                    <a class="btn btn-outline-secondary" id="vulnOrganizerCsv" href="/export/vulnerable.csv?dedup_ip={{ 1 if dedup_ip else 0 }}">
+                        <i class="bi bi-download"></i> 下载 CSV
+                    </a>
+                    <button type="button" class="btn btn-outline-primary" onclick="copyVulnerableIPs()">
+                        <i class="bi bi-clipboard"></i> 复制 IP 列表
+                    </button>
+                    <div class="ms-auto text-muted">
+                        共 <span id="vulnOrganizerCount">0</span> 个
+                    </div>
+                </div>
+
+                <div class="alert alert-info py-2 mb-3">
+                    <small>
+                        <i class="bi bi-info-circle"></i>
+                        说明：此功能仅汇总数据库中 <span class="fw-bold text-danger">状态=漏洞(红色)</span> 的目标，用于分类维护；危险项来自扫描时保存的根目录快照（<code>root_content</code>），不会再次自动访问远端目录或下载文件。
+                    </small>
+                </div>
+
+                <div id="vulnOrganizerMessage"></div>
+
+                <div id="vulnOrganizerLoading" class="text-center my-3 d-none">
+                    <div class="spinner-border text-danger" role="status"></div>
+                </div>
+
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 70px;">ID</th>
+                                <th style="width: 160px;">IP</th>
+                                <th style="width: 90px;">端口</th>
+                                <th style="width: 280px;">危险项/程度</th>
+                                <th style="width: 160px;">位置</th>
+                                <th>URL</th>
+                                <th style="width: 110px;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="vulnOrganizerTbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- NSFW 标记清单（不展示媒体内容） -->
+<div class="modal fade" id="nsfwMarkedModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header bg-warning">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle"></i> NSFW 标记清单</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                    <button type="button" class="btn btn-danger" onclick="startNsfwBatchScan()" title="扫描所有状态为红色（Vulnerable）的目标，默认遍历 /share/home/*/webdav 并进行本地 NSFW 打分（不展示媒体内容）">
+                        <i class="bi bi-shield-exclamation"></i> 扫描红色目标
+                    </button>
+                    <button type="button" class="btn btn-outline-danger" onclick="stopNsfwBatchScan()" title="停止当前批次扫描任务">
+                        <i class="bi bi-stop-circle"></i> 停止
+                    </button>
+                    <button type="button" class="btn btn-warning" onclick="loadNsfwMarkedItems()">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新列表
+                    </button>
+                    <a class="btn btn-outline-secondary" id="nsfwMarkedCsv" href="/export/nsfw_flagged.csv?threshold=0.7&limit=50000">
+                        <i class="bi bi-download"></i> 下载 CSV
+                    </a>
+                    <div class="ms-auto text-muted">
+                        <span id="nsfwBatchStatusText" class="me-2"></span>
+                        文件 <span id="nsfwMarkedCount">0</span> 个，目标 <span id="nsfwMarkedTargets">0</span> 个
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-3 align-items-center mb-2">
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="checkbox" id="nsfwDedupIp" checked>
+                        <label class="form-check-label" for="nsfwDedupIp">同 IP 只扫一次</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="checkbox" id="nsfwIncludeImages" checked>
+                        <label class="form-check-label" for="nsfwIncludeImages">图片</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="checkbox" id="nsfwIncludeVideos" checked>
+                        <label class="form-check-label" for="nsfwIncludeVideos">视频</label>
+                    </div>
+                    <div class="input-group input-group-sm" style="max-width: 220px;">
+                        <span class="input-group-text">目标线程</span>
+                        <input type="number" class="form-control" id="nsfwTargetWorkers" min="0" max="256" value="0">
+                    </div>
+                    <div class="input-group input-group-sm" style="max-width: 200px;">
+                        <span class="input-group-text">打分线程</span>
+                        <input type="number" class="form-control" id="nsfwScoreWorkers" min="0" max="64" value="0">
+                    </div>
+                    <small class="text-muted">0=自动</small>
+                    <small class="text-muted">默认遍历 <code>/share/home/*/webdav</code>；打分仅做标记与清单汇总，不展示图片/视频。</small>
+                </div>
+
+                <div class="alert alert-info py-2 mb-3">
+                    <small>
+                        <i class="bi bi-info-circle"></i>
+                        说明：此清单只显示已完成本地 NSFW 打分且 <code>score &gt;= 0.7</code> 的记录；需要先点「扫描红色目标」跑批次扫描。为避免卡顿，文件预览不会自动触发打分。
+                    </small>
+                </div>
+
+                <div id="nsfwMarkedMessage"></div>
+
+                <div id="nsfwMarkedLoading" class="text-center my-3 d-none">
+                    <div class="spinner-border text-warning" role="status"></div>
+                </div>
+
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 160px;">目标</th>
+                                <th>目录</th>
+                                <th style="width: 220px;">文件</th>
+                                <th style="width: 110px;">分数</th>
+                                <th style="width: 190px;">更新时间</th>
+                                <th style="width: 120px;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="nsfwMarkedTbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 let statsUpdateInterval = null;
 let lastUpdateTime = Date.now();
 let scanConfigModal = null;
+let vulnOrganizerModal = null;
+let vulnOrganizerItems = [];
+let nsfwMarkedModal = null;
+let nsfwMarkedItems = [];
+let nsfwBatchPollTimer = null;
+const NSFW_THRESHOLD = 0.7;
 
 // 初始化模态框
 document.addEventListener('DOMContentLoaded', function() {
     const modalElement = document.getElementById('scanConfigModal');
     if (modalElement) {
         scanConfigModal = new bootstrap.Modal(modalElement);
+    }
+    const vulnModalEl = document.getElementById('vulnOrganizerModal');
+    if (vulnModalEl) {
+        vulnOrganizerModal = new bootstrap.Modal(vulnModalEl);
+    }
+    const nsfwModalEl = document.getElementById('nsfwMarkedModal');
+    if (nsfwModalEl) {
+        nsfwMarkedModal = new bootstrap.Modal(nsfwModalEl);
     }
     startAutoRefresh();
 });
@@ -370,18 +535,12 @@ async function startScan() {
     }
 }
 
-function showMessage(msg, type) {
-    const msgDiv = document.getElementById('message');
-    msgDiv.innerHTML = `<div class="alert alert-${type} alert-dismissible fade show" role="alert">
-        ${msg}
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>`;
-}
-
 // 更新统计数据
 async function updateStats() {
     try {
-        const response = await fetch('/api/stats');
+        const dedupIpChecked = document.getElementById('dedup_ip')?.checked;
+        const dedupIp = dedupIpChecked ? '1' : '0';
+        const response = await fetch(`/api/stats?dedup_ip=${encodeURIComponent(dedupIp)}`);
         const stats = await response.json();
         
         // 更新数字，添加动画效果
@@ -462,6 +621,365 @@ async function importAllCSV() {
         }
     } catch (error) {
         showMessage('导入失败: ' + error.message, 'danger');
+    }
+}
+
+function openVulnerableOrganizer() {
+    if (vulnOrganizerModal) {
+        vulnOrganizerModal.show();
+    }
+    loadVulnerableTargets();
+}
+
+function openNsfwMarkedOrganizer() {
+    if (nsfwMarkedModal) {
+        nsfwMarkedModal.show();
+    }
+    loadNsfwMarkedItems();
+    loadNsfwBatchStatus().then((st) => {
+        if (st && st.running) {
+            _startNsfwBatchPoll();
+        }
+    });
+}
+
+function _getDedupIpFlag() {
+    const cb = document.getElementById('dedup_ip');
+    return cb ? !!cb.checked : true;
+}
+
+function _escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('\"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function _setVulnOrganizerMessage(msg, type) {
+    const el = document.getElementById('vulnOrganizerMessage');
+    if (!el) return;
+    if (!msg) {
+        el.innerHTML = '';
+        return;
+    }
+    el.innerHTML = `<div class=\"alert alert-${type} alert-dismissible fade show\" role=\"alert\">
+        ${msg}
+        <button type=\"button\" class=\"btn-close\" data-bs-dismiss=\"alert\"></button>
+    </div>`;
+}
+
+async function loadVulnerableTargets() {
+    const loading = document.getElementById('vulnOrganizerLoading');
+    const tbody = document.getElementById('vulnOrganizerTbody');
+    const countEl = document.getElementById('vulnOrganizerCount');
+    const csvLink = document.getElementById('vulnOrganizerCsv');
+
+    _setVulnOrganizerMessage('', 'info');
+    if (tbody) tbody.innerHTML = '';
+    if (countEl) countEl.textContent = '0';
+    if (loading) loading.classList.remove('d-none');
+
+    const dedupIp = _getDedupIpFlag();
+    const qs = new URLSearchParams();
+    qs.set('dedup_ip', dedupIp ? '1' : '0');
+    if (csvLink) csvLink.href = `/export/vulnerable.csv?${qs.toString()}`;
+
+    try {
+        const resp = await fetch(`/api/vulnerable_targets?${qs.toString()}`);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+            throw new Error(data.message || `请求失败(${resp.status})`);
+        }
+
+        vulnOrganizerItems = Array.isArray(data.items) ? data.items : [];
+        if (countEl) countEl.textContent = String(vulnOrganizerItems.length);
+
+        if (tbody) {
+            tbody.innerHTML = vulnOrganizerItems.map((it) => {
+                const id = _escapeHtml(it.id);
+                const ip = _escapeHtml(it.ip || '');
+                const port = _escapeHtml(it.port || '');
+                const region = (it.region || '').trim();
+                const city = (it.city || '').trim();
+                const loc = _escapeHtml([region, city].filter(Boolean).join(' / ') || '-');
+                const baseUrl = _escapeHtml(it.base_url || '');
+                const exploreUrl = `/explore/${encodeURIComponent(it.id)}`;
+
+                const risk = it && it.risk ? it.risk : null;
+                const critical = risk ? Number(risk.critical || 0) : 0;
+                const high = risk ? Number(risk.high || 0) : 0;
+                const privacy = risk ? Number(risk.privacy || 0) : 0;
+                const top = risk && Array.isArray(risk.top) ? risk.top : [];
+
+                let riskHtml = '<span class="text-muted">-</span>';
+                if (risk) {
+                    const parts = [];
+                    if (critical > 0) parts.push(`<span class="badge bg-danger">C ${critical}</span>`);
+                    if (high > 0) parts.push(`<span class="badge bg-warning text-dark">H ${high}</span>`);
+                    if (privacy > 0) parts.push(`<span class="badge bg-primary">P ${privacy}</span>`);
+
+                    const summary = parts.length
+                        ? `<div class="d-flex flex-wrap gap-1">${parts.join('')}</div>`
+                        : '<span class="text-muted">无</span>';
+
+                    const topHtml = top.length
+                        ? `<div class="mt-1 small">
+                            ${top.map((f) => {
+                                const sev = String(f.severity || '').toLowerCase();
+                                const badgeClass = sev === 'critical' ? 'bg-danger' : (sev === 'high' ? 'bg-warning text-dark' : (sev === 'privacy' ? 'bg-primary' : 'bg-secondary'));
+                                const badgeText = sev ? sev.toUpperCase() : 'INFO';
+                                const name = _escapeHtml(f.name || '');
+                                const category = _escapeHtml(f.category || '');
+                                const displayName = (f && f.is_dir) ? `${name}/` : name;
+                                const categorySuffix = category ? `<span class="text-muted">(${category})</span>` : '';
+                                return `<div><span class="badge ${badgeClass}">${badgeText}</span> <code>${displayName}</code> ${categorySuffix}</div>`;
+                            }).join('')}
+                        </div>`
+                        : '';
+
+                    riskHtml = `${summary}${topHtml}`;
+                }
+                return `<tr>
+                    <td>${id}</td>
+                    <td><code>${ip}</code></td>
+                    <td><code>${port}</code></td>
+                    <td>${riskHtml}</td>
+                    <td>${loc}</td>
+                    <td><code>${baseUrl}</code></td>
+                    <td>
+                        <a class=\"btn btn-sm btn-danger\" href=\"${exploreUrl}\" target=\"_blank\" rel=\"noopener\">
+                            浏览
+                        </a>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        if (vulnOrganizerItems.length === 0) {
+            _setVulnOrganizerMessage('没有找到状态为 <code>漏洞</code> 的目标。', 'secondary');
+        }
+    } catch (e) {
+        _setVulnOrganizerMessage(`获取失败：${_escapeHtml(e.message)}`, 'danger');
+    } finally {
+        if (loading) loading.classList.add('d-none');
+    }
+}
+
+async function copyVulnerableIPs() {
+    const ips = vulnOrganizerItems
+        .map((it) => (it && it.ip ? String(it.ip).trim() : ''))
+        .filter((x) => x);
+    const unique = Array.from(new Set(ips));
+    const text = unique.join('\n');
+
+    if (!text) {
+        _setVulnOrganizerMessage('列表中没有可复制的 IP。', 'warning');
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(text);
+        _setVulnOrganizerMessage(`已复制 ${unique.length} 个 IP 到剪贴板。`, 'success');
+    } catch (e) {
+        _setVulnOrganizerMessage('复制失败：浏览器未授予剪贴板权限。', 'danger');
+    }
+}
+
+function _setNsfwMarkedMessage(msg, type) {
+    const el = document.getElementById('nsfwMarkedMessage');
+    if (!el) return;
+    if (!msg) {
+        el.innerHTML = '';
+        return;
+    }
+    el.innerHTML = `<div class=\"alert alert-${type} alert-dismissible fade show\" role=\"alert\">
+        ${msg}
+        <button type=\"button\" class=\"btn-close\" data-bs-dismiss=\"alert\"></button>
+    </div>`;
+}
+
+function _setNsfwBatchStatusText(text) {
+    const el = document.getElementById('nsfwBatchStatusText');
+    if (!el) return;
+    el.textContent = text || '';
+}
+
+async function loadNsfwBatchStatus() {
+    try {
+        const resp = await fetch('/api/nsfw/batch_scan/status');
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+            throw new Error(data.message || `请求失败(${resp.status})`);
+        }
+        const st = data.status || {};
+
+        if (st && st.running) {
+            const tTotal = Number(st.targets_total || 0);
+            const tDone = Number(st.targets_done || 0);
+            const dirs = Number(st.dirs_scanned || 0);
+            const seen = Number(st.files_seen || 0);
+            const scored = Number(st.files_scored || 0);
+            const flagged = Number(st.flagged || 0);
+            _setNsfwBatchStatusText(`扫描中：目标 ${tDone}/${tTotal} · 目录 ${dirs} · 文件 ${scored}/${seen} · NSFW ${flagged}`);
+        } else if (st && st.job_id) {
+            const flagged = Number(st.flagged || 0);
+            _setNsfwBatchStatusText(`已完成：NSFW ${flagged}`);
+        } else {
+            _setNsfwBatchStatusText('');
+        }
+
+        return st;
+    } catch (e) {
+        _setNsfwBatchStatusText('');
+        return null;
+    }
+}
+
+function _startNsfwBatchPoll() {
+    if (nsfwBatchPollTimer) return;
+    nsfwBatchPollTimer = setInterval(async () => {
+        const st = await loadNsfwBatchStatus();
+        if (st && !st.running) {
+            _stopNsfwBatchPoll();
+            loadNsfwMarkedItems();
+        }
+    }, 2000);
+}
+
+function _stopNsfwBatchPoll() {
+    if (!nsfwBatchPollTimer) return;
+    clearInterval(nsfwBatchPollTimer);
+    nsfwBatchPollTimer = null;
+}
+
+async function startNsfwBatchScan() {
+    const dedupCb = document.getElementById('nsfwDedupIp');
+    const dedupIp = dedupCb ? !!dedupCb.checked : true;
+    const imgCb = document.getElementById('nsfwIncludeImages');
+    const vidCb = document.getElementById('nsfwIncludeVideos');
+    const includeImages = !!(imgCb && imgCb.checked);
+    const includeVideos = !!(vidCb && vidCb.checked);
+    const targetWorkersEl = document.getElementById('nsfwTargetWorkers');
+    const scoreWorkersEl = document.getElementById('nsfwScoreWorkers');
+    const targetWorkersRaw = targetWorkersEl ? String(targetWorkersEl.value || '').trim() : '';
+    const scoreWorkersRaw = scoreWorkersEl ? String(scoreWorkersEl.value || '').trim() : '';
+
+    const parseWorker = (raw, maxVal) => {
+        if (!raw) return 0;
+        const n = parseInt(raw, 10);
+        if (Number.isNaN(n) || n < 0) return 0;
+        return Math.min(n, maxVal);
+    };
+    const targetWorkers = parseWorker(targetWorkersRaw, 256);
+    const scoreWorkers = parseWorker(scoreWorkersRaw, 64);
+
+    _setNsfwMarkedMessage('正在启动批次扫描...', 'info');
+    try {
+        const resp = await fetch('/api/nsfw/batch_scan/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                threshold: NSFW_THRESHOLD,
+                dedup_ip: dedupIp,
+                include_images: includeImages,
+                include_videos: includeVideos,
+                target_workers: targetWorkers,
+                score_workers: scoreWorkers,
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+            throw new Error(data.message || `请求失败(${resp.status})`);
+        }
+
+        _setNsfwMarkedMessage('批次扫描已启动：可继续浏览，稍后刷新列表查看标记结果。', 'success');
+        await loadNsfwBatchStatus();
+        _startNsfwBatchPoll();
+    } catch (e) {
+        _setNsfwMarkedMessage(`启动失败：${_escapeHtml(e.message)}`, 'danger');
+    }
+}
+
+async function stopNsfwBatchScan() {
+    _setNsfwMarkedMessage('正在请求停止...', 'warning');
+    try {
+        const resp = await fetch('/api/nsfw/batch_scan/stop', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+            throw new Error(data.message || `请求失败(${resp.status})`);
+        }
+        _setNsfwMarkedMessage('已发送停止请求。', 'secondary');
+        await loadNsfwBatchStatus();
+    } catch (e) {
+        _setNsfwMarkedMessage(`停止失败：${_escapeHtml(e.message)}`, 'danger');
+    }
+}
+
+async function loadNsfwMarkedItems() {
+    const loading = document.getElementById('nsfwMarkedLoading');
+    const tbody = document.getElementById('nsfwMarkedTbody');
+    const countEl = document.getElementById('nsfwMarkedCount');
+    const targetsEl = document.getElementById('nsfwMarkedTargets');
+    const csvLink = document.getElementById('nsfwMarkedCsv');
+
+    _setNsfwMarkedMessage('', 'info');
+    if (tbody) tbody.innerHTML = '';
+    if (countEl) countEl.textContent = '0';
+    if (targetsEl) targetsEl.textContent = '0';
+    if (loading) loading.classList.remove('d-none');
+
+    const qs = new URLSearchParams();
+    qs.set('threshold', String(NSFW_THRESHOLD));
+    qs.set('limit', '2000');
+    if (csvLink) csvLink.href = `/export/nsfw_flagged.csv?threshold=${encodeURIComponent(String(NSFW_THRESHOLD))}&limit=50000`;
+
+    try {
+        const resp = await fetch(`/api/nsfw/flagged?${qs.toString()}`);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+            throw new Error(data.message || `请求失败(${resp.status})`);
+        }
+
+        nsfwMarkedItems = Array.isArray(data.items) ? data.items : [];
+        const targetIds = new Set(nsfwMarkedItems.map((x) => x && x.target_id).filter((x) => x !== null && x !== undefined));
+
+        if (countEl) countEl.textContent = String(nsfwMarkedItems.length);
+        if (targetsEl) targetsEl.textContent = String(targetIds.size);
+
+        if (tbody) {
+            tbody.innerHTML = nsfwMarkedItems.map((it) => {
+                const target = it.ip ? `${_escapeHtml(it.ip)}:${_escapeHtml(it.port || '')}` : _escapeHtml(it.base_url || '');
+                const dirPath = _escapeHtml(it.dir_path || '/');
+                const filename = _escapeHtml(it.filename || '');
+                const scoreVal = Number(it.score || 0);
+                const scoreBadge = scoreVal >= NSFW_THRESHOLD ? 'bg-danger' : 'bg-secondary';
+                const updatedAt = _escapeHtml(it.updated_at || '');
+                const jumpUrl = `/explore/${encodeURIComponent(it.target_id)}?path=${encodeURIComponent(it.dir_path || '/')}`;
+
+                return `<tr>
+                    <td><code>${target}</code></td>
+                    <td><code>${dirPath}</code></td>
+                    <td><code>${filename}</code></td>
+                    <td><span class=\"badge ${scoreBadge}\">${scoreVal.toFixed(2)}</span></td>
+                    <td class=\"text-muted\">${updatedAt}</td>
+                    <td>
+                        <a class=\"btn btn-sm btn-outline-primary\" href=\"${jumpUrl}\" target=\"_blank\" rel=\"noopener\">
+                            跳转
+                        </a>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        if (nsfwMarkedItems.length === 0) {
+            _setNsfwMarkedMessage('暂无 NSFW 标记记录（请先点“扫描红色目标”执行批次扫描）。', 'secondary');
+        }
+    } catch (e) {
+        _setNsfwMarkedMessage(`获取失败：${_escapeHtml(e.message)}`, 'danger');
+    } finally {
+        if (loading) loading.classList.add('d-none');
     }
 }
 

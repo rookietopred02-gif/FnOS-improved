@@ -13,6 +13,9 @@
                     <a href="/" class="btn btn-secondary">
                         <i class="bi bi-arrow-left"></i> 返回列表
                     </a>
+                    <button id="sensitiveOrganizeBtn" type="button" class="btn btn-outline-danger" onclick="toggleSensitiveOrganizer()">
+                        <i class="bi bi-shield-lock"></i> 一键整理敏感信息
+                    </button>
                     <a href="/download_folder/{{ target.id }}?path={{ current_path }}" class="btn btn-success">
                         <i class="bi bi-download"></i> 打包下载
                     </a>
@@ -64,6 +67,29 @@
     <!-- 文件列表 -->
     <div class="card shadow-sm">
         <div class="card-body p-0">
+            <div id="sensitiveOrganizerBar" class="px-3 pt-3 d-none">
+                <div class="alert alert-warning d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                    <div>
+                        <i class="bi bi-shield-exclamation"></i>
+                        <strong>已标记潜在敏感项目</strong>
+                        <span class="ms-2">共 <span id="sensitiveCount" class="fw-bold">0</span> 项</span>
+                        <span class="ms-2 text-muted" id="sensitiveBreakdown"></span>
+                    </div>
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" id="onlySensitiveToggle" onchange="applySensitiveFilter()">
+                            <label class="form-check-label" for="onlySensitiveToggle">只显示敏感项</label>
+                        </div>
+                        <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" id="sensitiveConfirmToggle" checked onchange="toggleSensitiveConfirm()">
+                            <label class="form-check-label" for="sensitiveConfirmToggle">敏感操作需确认</label>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearSensitiveOrganizer()">
+                            <i class="bi bi-arrow-counterclockwise"></i> 还原
+                        </button>
+                    </div>
+                </div>
+            </div>
             <div class="list-group list-group-flush">
                 {% if items|length == 0 %}
                 <div class="list-group-item text-center text-muted py-5">
@@ -73,21 +99,28 @@
                 {% endif %}
                 
                 {% for item in items %}
-                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center py-3">
+                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center py-3"
+                     data-item-name="{{ item.name|e }}"
+                     data-item-is-dir="{{ 1 if item.is_dir else 0 }}">
                     <div class="d-flex align-items-center">
                         {% if item.is_dir %}
                             <span class="fs-4 me-3">📁</span>
                             <a href="/explore/{{ target.id }}?path={{ current_path.rstrip('/') }}/{{ item.href.rstrip('/') }}" 
-                               class="text-decoration-none text-dark fw-bold">
+                               class="text-decoration-none text-dark fw-bold"
+                               data-item-primary="1">
                                 {{ item.name.rstrip('/') }}
                             </a>
                         {% else %}
                             <span class="fs-4 me-3">{{ get_file_icon(item.name) }}</span>
                             <a href="javascript:void(0)" 
-                               onclick="previewFile('{{ target.id }}', '{{ current_path.rstrip('/') }}/{{ item.href }}', '{{ item.name }}')"
-                               class="text-decoration-none text-secondary">
+                               onclick="safePreviewFile({{ target.id }}, {{ (current_path.rstrip('/') ~ '/' ~ item.href)|tojson|forceescape }}, {{ item.name|tojson|forceescape }})"
+                               class="text-decoration-none text-secondary"
+                               data-item-primary="1">
                                 {{ item.name }}
                             </a>
+                            {% if item.nsfw is defined and item.nsfw and item.nsfw.decision == 'nsfw' %}
+                                <span class="badge bg-danger ms-2" title="NSFW score={{ '%.2f'|format(item.nsfw.score or 0) }} / threshold={{ item.nsfw.threshold or 0.7 }}">NSFW</span>
+                            {% endif %}
                         {% endif %}
                     </div>
 
@@ -96,15 +129,17 @@
                         <a href="/explore/{{ target.id }}?path={{ current_path.rstrip('/') }}/{{ item.href }}&action=view" 
                            target="_blank"
                            class="btn btn-sm btn-outline-secondary"
+                           onclick="return safeLink({{ target.id }}, {{ (current_path.rstrip('/') ~ '/' ~ item.href)|tojson|forceescape }}, {{ item.name|tojson|forceescape }}, 'view')"
                            title="在新窗口打开">
                             <i class="bi bi-box-arrow-up-right"></i> 新窗口
                         </a>
-                        <button onclick="previewFile('{{ target.id }}', '{{ current_path.rstrip('/') }}/{{ item.href }}', '{{ item.name }}')" 
+                        <button onclick="safePreviewFile({{ target.id }}, {{ (current_path.rstrip('/') ~ '/' ~ item.href)|tojson|forceescape }}, {{ item.name|tojson|forceescape }})" 
                                 class="btn btn-sm btn-outline-info">
                             <i class="bi bi-eye"></i> 预览
                         </button>
                         <a href="/explore/{{ target.id }}?path={{ current_path.rstrip('/') }}/{{ item.href }}&action=download" 
-                           class="btn btn-sm btn-outline-primary">
+                           class="btn btn-sm btn-outline-primary"
+                           onclick="return safeLink({{ target.id }}, {{ (current_path.rstrip('/') ~ '/' ~ item.href)|tojson|forceescape }}, {{ item.name|tojson|forceescape }}, 'download')">
                             <i class="bi bi-download"></i> 下载
                         </a>
                     </div>
@@ -169,19 +204,37 @@
     font-family: 'Courier New', monospace;
     font-size: 14px;
 }
+
+.sensitive-item {
+    border-left: 4px solid #dc3545;
+    background-color: #fff8f8;
+}
+
+.sensitive-item[data-sensitive-severity="privacy"] {
+    border-left-color: #6f42c1;
+    background-color: #fbf7ff;
+}
+
+.sensitive-item[data-sensitive-severity="high"] {
+    border-left-color: #fd7e14;
+    background-color: #fff7ed;
+}
+
+.sensitive-badge {
+    font-size: 0.75rem;
+    vertical-align: middle;
+}
 </style>
 
 <script>
 let previewModal = null;
+let sensitiveOrganizerEnabled = false;
+let sensitiveConfirmEnabled = true;
 
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('Initializing preview modal...');
     const modalElement = document.getElementById('previewModal');
     if (modalElement) {
         previewModal = new bootstrap.Modal(modalElement);
-        console.log('Preview modal initialized successfully');
-    } else {
-        console.error('Preview modal element not found!');
     }
 });
 
@@ -190,8 +243,20 @@ function getFileExtension(filename) {
 }
 
 function isImageFile(filename) {
-    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico'];
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'heic', 'heif'];
     return imageExts.includes(getFileExtension(filename));
+}
+
+function isVideoFile(filename) {
+    const videoExts = ['mov', 'mp4'];
+    return videoExts.includes(getFileExtension(filename));
+}
+
+function getVideoMimeType(filename) {
+    const ext = getFileExtension(filename);
+    if (ext === 'mov') return 'video/quicktime';
+    if (ext === 'mp4') return 'video/mp4';
+    return 'video/*';
 }
 
 function isTextFile(filename) {
@@ -199,11 +264,197 @@ function isTextFile(filename) {
     return textExts.includes(getFileExtension(filename));
 }
 
+function _normalizeItemName(name) {
+    return (name || '').toString().trim();
+}
+
+function _stripTrailingSlash(name) {
+    return name.endsWith('/') ? name.slice(0, -1) : name;
+}
+
+function classifySensitiveItem(name, isDir) {
+    const raw = _normalizeItemName(name);
+    const cleaned = _stripTrailingSlash(raw);
+    const lower = cleaned.toLowerCase();
+
+    const mediaImageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'heic', 'heif', 'tif', 'tiff'];
+    const mediaVideoExts = ['mov', 'mp4', 'mkv', 'avi', 'm4v', 'webm', 'mts', 'm2ts'];
+    const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'bak', 'backup', 'old'];
+    const dbExts = ['db', 'sqlite', 'sqlite3', 'sql', 'mdb', 'accdb'];
+    const keyExts = ['pem', 'key', 'pfx', 'p12', 'ppk', 'csr', 'crt', 'cer', 'der', 'kdbx'];
+
+    const sensitiveNameKeywords = [
+        '.env', 'passwd', 'shadow', 'credentials', 'token', 'apikey', 'api_key', 'secret', 'secrets',
+        'id_rsa', 'id_ed25519', 'authorized_keys', 'known_hosts', '.git-credentials', '.npmrc', '.pypirc',
+    ];
+
+    const ext = getFileExtension(cleaned);
+
+    if (isDir) {
+        const sensitiveDirNames = ['.ssh', '.git', 'secrets', 'secret', 'private', 'backup', 'backups', 'keys', 'key'];
+        if (sensitiveDirNames.includes(lower)) {
+            return { sensitive: true, category: 'Sensitive Dir', severity: 'high', badgeClass: 'bg-warning text-dark' };
+        }
+        return { sensitive: false };
+    }
+
+    if (keyExts.includes(ext) || sensitiveNameKeywords.some((k) => lower === k || lower.includes(k))) {
+        return { sensitive: true, category: 'Credentials/Secrets', severity: 'critical', badgeClass: 'bg-danger' };
+    }
+    if (dbExts.includes(ext)) {
+        return { sensitive: true, category: 'Database', severity: 'high', badgeClass: 'bg-warning text-dark' };
+    }
+    if (archiveExts.includes(ext)) {
+        return { sensitive: true, category: 'Archive/Backup', severity: 'high', badgeClass: 'bg-warning text-dark' };
+    }
+    if (mediaImageExts.includes(ext)) {
+        return { sensitive: true, category: 'Image', severity: 'privacy', badgeClass: 'bg-primary' };
+    }
+    if (mediaVideoExts.includes(ext)) {
+        return { sensitive: true, category: 'Video', severity: 'privacy', badgeClass: 'bg-primary' };
+    }
+
+    return { sensitive: false };
+}
+
+function toggleSensitiveConfirm() {
+    const el = document.getElementById('sensitiveConfirmToggle');
+    sensitiveConfirmEnabled = !!(el && el.checked);
+}
+
+function safePreviewFile(targetId, filePath, filename) {
+    if (sensitiveOrganizerEnabled && sensitiveConfirmEnabled) {
+        const result = classifySensitiveItem(filename, false);
+        if (result.sensitive) {
+            const ok = confirm(`此文件可能包含敏感信息（${result.category}）：\n${filename}\n\n仍要预览吗？`);
+            if (!ok) return;
+        }
+    }
+    previewFile(targetId, filePath, filename);
+}
+
+function safeLink(targetId, filePath, filename, action) {
+    if (sensitiveOrganizerEnabled && sensitiveConfirmEnabled) {
+        const result = classifySensitiveItem(filename, false);
+        if (result.sensitive) {
+            const verb = action === 'download' ? '下载' : '打开';
+            const ok = confirm(`此文件可能包含敏感信息（${result.category}）：\n${filename}\n\n仍要${verb}吗？`);
+            if (!ok) return false;
+        }
+    }
+    return true;
+}
+
+function _ensureSensitiveBadge(row, result) {
+    const primary = row.querySelector('[data-item-primary="1"]');
+    if (!primary) return;
+    if (row.querySelector('.sensitive-badge')) return;
+
+    const badge = document.createElement('span');
+    badge.className = `badge sensitive-badge ms-2 ${result.badgeClass || 'bg-secondary'}`;
+    badge.textContent = result.category || 'Sensitive';
+    primary.insertAdjacentElement('afterend', badge);
+}
+
+function applySensitiveFilter() {
+    const onlyToggle = document.getElementById('onlySensitiveToggle');
+    const onlySensitive = !!(onlyToggle && onlyToggle.checked);
+
+    const rows = document.querySelectorAll('.list-group-item[data-item-name]');
+    rows.forEach((row) => {
+        const isSensitive = row.getAttribute('data-sensitive') === '1';
+        if (onlySensitive && !isSensitive) row.classList.add('d-none');
+        else row.classList.remove('d-none');
+    });
+}
+
+function toggleSensitiveOrganizer() {
+    if (sensitiveOrganizerEnabled) clearSensitiveOrganizer();
+    else runSensitiveOrganizer();
+}
+
+function runSensitiveOrganizer() {
+    sensitiveOrganizerEnabled = true;
+
+    const btn = document.getElementById('sensitiveOrganizeBtn');
+    if (btn) {
+        btn.classList.remove('btn-outline-danger');
+        btn.classList.add('btn-danger');
+    }
+
+    const bar = document.getElementById('sensitiveOrganizerBar');
+    if (bar) bar.classList.remove('d-none');
+
+    const categories = {};
+    const rows = document.querySelectorAll('.list-group-item[data-item-name]');
+
+    rows.forEach((row) => {
+        const name = row.getAttribute('data-item-name') || '';
+        const isDir = row.getAttribute('data-item-is-dir') === '1';
+        const result = classifySensitiveItem(name, isDir);
+
+        if (result.sensitive) {
+            row.setAttribute('data-sensitive', '1');
+            row.setAttribute('data-sensitive-category', result.category || 'Sensitive');
+            row.setAttribute('data-sensitive-severity', result.severity || 'other');
+            row.classList.add('sensitive-item');
+            _ensureSensitiveBadge(row, result);
+
+            const cat = result.category || 'Sensitive';
+            categories[cat] = (categories[cat] || 0) + 1;
+        } else {
+            row.removeAttribute('data-sensitive');
+            row.removeAttribute('data-sensitive-category');
+            row.removeAttribute('data-sensitive-severity');
+            row.classList.remove('sensitive-item');
+            row.querySelectorAll('.sensitive-badge').forEach((b) => b.remove());
+        }
+    });
+
+    const total = Object.values(categories).reduce((a, b) => a + b, 0);
+    const countEl = document.getElementById('sensitiveCount');
+    if (countEl) countEl.textContent = String(total);
+
+    const breakdown = Object.entries(categories)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([k, v]) => `${k}:${v}`)
+        .join('  ');
+    const breakdownEl = document.getElementById('sensitiveBreakdown');
+    if (breakdownEl) breakdownEl.textContent = breakdown ? `(${breakdown})` : '';
+
+    toggleSensitiveConfirm();
+    applySensitiveFilter();
+}
+
+function clearSensitiveOrganizer() {
+    sensitiveOrganizerEnabled = false;
+
+    const btn = document.getElementById('sensitiveOrganizeBtn');
+    if (btn) {
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-outline-danger');
+    }
+
+    const bar = document.getElementById('sensitiveOrganizerBar');
+    if (bar) bar.classList.add('d-none');
+
+    const onlyToggle = document.getElementById('onlySensitiveToggle');
+    if (onlyToggle) onlyToggle.checked = false;
+
+    const rows = document.querySelectorAll('.list-group-item[data-item-name]');
+    rows.forEach((row) => {
+        row.classList.remove('d-none');
+        row.classList.remove('sensitive-item');
+        row.removeAttribute('data-sensitive');
+        row.removeAttribute('data-sensitive-category');
+        row.removeAttribute('data-sensitive-severity');
+        row.querySelectorAll('.sensitive-badge').forEach((b) => b.remove());
+    });
+}
+
 async function previewFile(targetId, filePath, filename) {
-    console.log('Preview file:', targetId, filePath, filename);
-    
     if (!previewModal) {
-        console.error('Preview modal not initialized!');
         alert('预览功能初始化失败，请刷新页面重试');
         return;
     }
@@ -230,13 +481,38 @@ async function previewFile(targetId, filePath, filename) {
     
     try {
         const viewUrl = `/explore/${targetId}?path=${filePath}&action=view`;
-        console.log('Fetching:', viewUrl);
         
         if (isImageFile(filename)) {
             // 图片预览
             modalBody.innerHTML = `
                 <div class="text-center">
                     <img src="${viewUrl}" alt="${filename}" class="img-fluid" onerror="this.parentElement.innerHTML='<div class=\\'alert alert-danger\\'>图片加载失败</div>'">
+                </div>
+            `;
+        } else if (isVideoFile(filename)) {
+            // 视频预览（MOV）
+            const absoluteUrl = new URL(viewUrl, window.location.origin).toString();
+            const vlcUrl = `vlc://${absoluteUrl}`;
+            modalBody.innerHTML = `
+                <div>
+                    <video controls preload="metadata" class="w-100" style="max-height: 70vh;">
+                        <source src="${absoluteUrl}">
+                        您的浏览器不支持视频播放
+                    </video>
+                    <div class="d-flex gap-2 flex-wrap mt-2">
+                        <a class="btn btn-sm btn-outline-warning" href="${vlcUrl}">
+                            <i class="bi bi-play-circle"></i> 用 VLC 打开
+                        </a>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('${absoluteUrl}')">
+                            <i class="bi bi-clipboard"></i> 复制播放链接
+                        </button>
+                        <a class="btn btn-sm btn-outline-secondary" href="${absoluteUrl}" target="_blank" rel="noopener">
+                            <i class="bi bi-box-arrow-up-right"></i> 在新窗口打开
+                        </a>
+                    </div>
+                    <small class="text-muted d-block mt-2">
+                        如果浏览器无法播放 MOV（编码/容器不兼容），建议用 VLC 打开网络串流。
+                    </small>
                 </div>
             `;
         } else if (isTextFile(filename)) {
@@ -266,7 +542,6 @@ async function previewFile(targetId, filePath, filename) {
             `;
         }
     } catch (error) {
-        console.error('Preview error:', error);
         modalBody.innerHTML = `
             <div class="alert alert-danger" role="alert">
                 <i class="bi bi-exclamation-triangle"></i> 加载失败: ${error.message}
@@ -279,6 +554,24 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+async function copyToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        alert('已复制到剪贴板');
+    } catch (e) {
+        // Fallback
+        const el = document.createElement('textarea');
+        el.value = text;
+        el.style.position = 'fixed';
+        el.style.left = '-9999px';
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+        alert('已复制到剪贴板');
+    }
 }
 </script>
 {% endblock %}
